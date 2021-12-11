@@ -14,7 +14,7 @@ import os
 import urllib.parse
 import urllib.request
 from enum import Enum
-from typing import Any, Dict, Optional, Union, cast
+from typing import Any, Dict, Optional, Union
 from urllib.error import HTTPError
 
 import boto3
@@ -30,6 +30,7 @@ class AwsService(Enum):
     """AWS service supported by function"""
 
     cloudwatch = "cloudwatch"
+    ec2autoscaling = "ec2autoscaling"
     guardduty = "guardduty"
 
 
@@ -191,8 +192,69 @@ def format_guardduty_finding(message: Dict[str, Any], region: str) -> Dict[str, 
     }
 
 
+class Ec2AutoscalingLaunchStatus(Enum):
+    """Maps EC2 Autoscaling launch status to Slack message format color"""
+
+    InProgress = "good"
+    Failed = "danger"
+
+
+def format_ec2_autosacling_launch(
+    message: Dict[str, Any], region: str
+) -> Dict[str, Any]:
+    """
+    Format EC2 Autoscaling launch status to Slack message format
+
+    :params message: SNS message body containing EC2 Autoscaling launch event
+    :params region: AWS region where the event originated from
+    :returns: formatted Slack message payload
+    """
+
+    ec2autoscaling_url = get_service_url(region=region, service="ec2autoscaling")
+    detail = message["detail"]
+    status_code = detail["StatusCode"]
+
+    return {
+        "color": Ec2AutoscalingLaunchStatus[status_code].value,
+        "fallback": message["detail-type"],
+        "fields": [
+            {
+                "title": "Description",
+                "value": f"`{message['detail-type']}`",
+                "short": False,
+            },
+            {
+                "title": "Status",
+                "value": f"`{detail['StatusCode']}`",
+                "short": True,
+            },
+            {
+                "title": "Message",
+                "value": f"`{detail['StatusMessage']}`",
+                "short": True,
+            },
+            {
+                "title": "Autoscaling Group",
+                "value": f"`{detail['AutoScalingGroupName']}`",
+                "short": False,
+            },
+            {
+                "title": "EC2 Instance Id",
+                "value": f"`{detail['EC2InstanceId']}`",
+                "short": True,
+            },
+            {
+                "title": "Link to Autoscaling group activity",
+                "value": f"{ec2autoscaling_url}#/details/{detail['AutoScalingGroupName']}?view=activity",
+                "short": False,
+            },
+        ],
+        "text": message["detail-type"],
+    }
+
+
 def format_default(
-    message: Union[str, Dict], subject: Optional[str] = None
+    message: Dict[str, Any], subject: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Default formatter, converting event into Slack message format
@@ -201,7 +263,7 @@ def format_default(
     :returns: formatted Slack message payload
     """
 
-    attachments = {
+    attachment = {
         "fallback": "A new message",
         "text": "AWS notification",
         "title": subject if subject else "Message",
@@ -209,21 +271,15 @@ def format_default(
     }
     fields = []
 
-    if type(message) is dict:
-        for k, v in message.items():
-            value = f"{json.dumps(v)}" if isinstance(v, (dict, list)) else str(v)
-            fields.append({"title": k, "value": f"`{value}`", "short": len(value) < 25})
-    else:
-        fields.append({"value": message, "short": False})
+    for k, v in message.items():
+        value = f"{json.dumps(v)}" if isinstance(v, (dict, list)) else str(v)
+        fields.append({"title": k, "value": f"`{value}`", "short": len(value) < 25})
 
-    if fields:
-        attachments["fields"] = fields  # type: ignore
-
-    return attachments
+    return attachment
 
 
-def get_slack_message_payload(
-    message: Union[str, Dict], region: str, subject: Optional[str] = None
+def get_slack_message_attachment(
+    message: Dict[str, Any], region: str, subject: Optional[str] = None
 ) -> Dict:
     """
     Parse notification message and format into Slack message payload
@@ -233,48 +289,28 @@ def get_slack_message_payload(
     :params subject: Optional subject line for Slack notification
     :returns: Slack message payload
     """
+    if isinstance(message, dict):
+        if message.get("source") == "aws.autoscaling":
+            if message.get("detail", {}).get("StatusCode"):
+                attachment = format_ec2_autosacling_launch(message=message, region=region)
 
-    slack_channel = os.environ["SLACK_CHANNEL"]
-    slack_username = os.environ["SLACK_USERNAME"]
-    slack_emoji = os.environ["SLACK_EMOJI"]
+        elif message.get("detail-type") == "GuardDuty Finding":
+            attachment = format_guardduty_finding(message=message, region=region)
 
-    payload = {
-        "channel": slack_channel,
-        "username": slack_username,
-        "icon_emoji": slack_emoji,
-    }
-    attachment = None
-
-    if isinstance(message, str):
-        try:
-            message = json.loads(message)
-        except json.JSONDecodeError:
-            logging.info("Not a structured payload, just a string message")
-
-    message = cast(Dict[str, Any], message)
-
-    if "AlarmName" in message:
-        notification = format_cloudwatch_alarm(message=message, region=region)
-        attachment = notification
-
-    elif (
-        isinstance(message, Dict) and message.get("detail-type") == "GuardDuty Finding"
-    ):
-        notification = format_guardduty_finding(
-            message=message, region=message["region"]
-        )
-        attachment = notification
-
-    elif "attachments" in message or "text" in message:
-        payload = {**payload, **message}
+        else:
+            attachment = format_default(message=message, subject=subject)
 
     else:
-        attachment = format_default(message=message, subject=subject)
+        if "AlarmName" in message:
+            attachment = format_cloudwatch_alarm(message=message, region=region)
 
-    if attachment:
-        payload["attachments"] = [attachment]  # type: ignore
+        elif "attachments" in message or "text" in message:
+            attachment = message
 
-    return payload
+        else:
+            attachment = format_default(message=message, subject=subject)
+
+    return attachment
 
 
 def send_slack_notification(payload: Dict[str, Any]) -> str:
@@ -312,15 +348,34 @@ def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> str:
     if os.environ.get("LOG_EVENTS", "False") == "True":
         logging.info(f"Event logging enabled: `{json.dumps(event)}`")
 
+    payload = {
+        "channel": os.environ["SLACK_CHANNEL"],
+        "username": os.environ["SLACK_USERNAME"],
+        "icon_emoji": os.environ["SLACK_EMOJI"],
+    }
+
     for record in event["Records"]:
         sns = record["Sns"]
         subject = sns["Subject"]
-        message = sns["Message"]
+        msg = sns["Message"]
         region = sns["TopicArn"].split(":")[3]
 
-        payload = get_slack_message_payload(
-            message=message, region=region, subject=subject
-        )
+        try:
+            message = json.loads(msg)
+            attachment = get_slack_message_attachment(
+                message=message, region=region, subject=subject
+            )
+        except json.JSONDecodeError:
+            logging.info("Not a structured payload, just a string message")
+            attachment = {
+                "fallback": "A new message",
+                "text": "AWS notification",
+                "title": "Message",
+                "mrkdwn_in": ["value"],
+                "fields": [{"value": message, "short": False}],
+            }
+
+        payload["attachments"] = [attachment]
         response = send_slack_notification(payload=payload)
 
     if json.loads(response)["code"] != 200:

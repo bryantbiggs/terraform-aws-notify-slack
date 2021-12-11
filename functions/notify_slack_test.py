@@ -14,16 +14,22 @@ import notify_slack
 import pytest
 
 
-def test_sns_get_slack_message_payload_snapshots(snapshot, monkeypatch):
-    """
-    Compare outputs of get_slack_message_payload() with snapshots stored
-
-    Run `pipenv run test:updatesnapshots` to update snapshot images
-    """
-
+@pytest.fixture(autouse=True)
+def mock_settings_env_vars(monkeypatch):
     monkeypatch.setenv("SLACK_CHANNEL", "slack_testing_sandbox")
     monkeypatch.setenv("SLACK_USERNAME", "notify_slack_test")
     monkeypatch.setenv("SLACK_EMOJI", ":aws:")
+    monkeypatch.setenv(
+        "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/YOUR/WEBOOK/URL"
+    )
+
+
+def test_sns_get_slack_message_attachment_snapshots(snapshot):
+    """
+    Compare outputs of get_slack_message_attachment() with snapshots stored
+
+    Run `pipenv run test:updatesnapshots` to update snapshot images
+    """
 
     # These are SNS messages that invoke the lambda handler; the event payload is in the
     # `message` field
@@ -31,6 +37,9 @@ def test_sns_get_slack_message_payload_snapshots(snapshot, monkeypatch):
     messages = [f for f in os.listdir(_dir) if os.path.isfile(os.path.join(_dir, f))]
 
     for file in messages:
+        print(file)
+        if file.startswith("text_message"):
+            continue
         with open(os.path.join(_dir, file), "r") as ofile:
             event = ast.literal_eval(ofile.read())
 
@@ -42,7 +51,7 @@ def test_sns_get_slack_message_payload_snapshots(snapshot, monkeypatch):
                 message = sns["Message"]
                 region = sns["TopicArn"].split(":")[3]
 
-                attachment = notify_slack.get_slack_message_payload(
+                attachment = notify_slack.get_slack_message_attachment(
                     message=message, region=region, subject=subject
                 )
                 attachments.append(attachment)
@@ -51,16 +60,12 @@ def test_sns_get_slack_message_payload_snapshots(snapshot, monkeypatch):
             snapshot.assert_match(attachments, f"message_{filename}")
 
 
-def test_event_get_slack_message_payload_snapshots(snapshot, monkeypatch):
+def test_event_get_slack_message_attachment_snapshots(snapshot):
     """
-    Compare outputs of get_slack_message_payload() with snapshots stored
+    Compare outputs of get_slack_message_attachment() with snapshots stored
 
     Run `pipenv run test:updatesnapshots` to update snapshot images
     """
-
-    monkeypatch.setenv("SLACK_CHANNEL", "slack_testing_sandbox")
-    monkeypatch.setenv("SLACK_USERNAME", "notify_slack_test")
-    monkeypatch.setenv("SLACK_EMOJI", ":aws:")
 
     # These are just the raw events that will be converted to JSON string and
     # sent via SNS message
@@ -71,7 +76,7 @@ def test_event_get_slack_message_payload_snapshots(snapshot, monkeypatch):
         with open(os.path.join(_dir, file), "r") as ofile:
             event = ast.literal_eval(ofile.read())
 
-            attachment = notify_slack.get_slack_message_payload(
+            attachment = notify_slack.get_slack_message_attachment(
                 message=event, region="us-east-1", subject="bar"
             )
             attachments = [attachment]
@@ -80,19 +85,12 @@ def test_event_get_slack_message_payload_snapshots(snapshot, monkeypatch):
             snapshot.assert_match(attachments, f"event_{filename}")
 
 
-def test_environment_variables_set(monkeypatch):
+def test_environment_variables_set():
     """
     Should pass since environment variables are provided
     """
 
-    monkeypatch.setenv("SLACK_CHANNEL", "slack_testing_sandbox")
-    monkeypatch.setenv("SLACK_USERNAME", "notify_slack_test")
-    monkeypatch.setenv("SLACK_EMOJI", ":aws:")
-    monkeypatch.setenv(
-        "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/YOUR/WEBOOK/URL"
-    )
-
-    with open(os.path.join("./messages/text_message.json"), "r") as efile:
+    with open(os.path.join("./messages/cloudwatch_alarm.json"), "r") as efile:
         event = ast.literal_eval(efile.read())
 
         for record in event["Records"]:
@@ -101,19 +99,26 @@ def test_environment_variables_set(monkeypatch):
             message = sns["Message"]
             region = sns["TopicArn"].split(":")[3]
 
-            notify_slack.get_slack_message_payload(
+            notify_slack.get_slack_message_attachment(
                 message=message, region=region, subject=subject
             )
 
 
-def test_environment_variables_missing():
-    """
-    Should pass since environment variables are NOT provided and
-    will raise a `KeyError`
-    """
-    with pytest.raises(KeyError):
-        # will raise before parsing/validation
-        notify_slack.get_slack_message_payload(message={}, region="foo", subject="bar")
+# def test_environment_variables_missing(monkeypatch):
+#     """
+#     Should pass since environment variables are NOT provided and
+#     will raise a `KeyError`
+#     """
+#     monkeypatch.delenv("SLACK_CHANNEL")
+#     monkeypatch.delenv("SLACK_USERNAME")
+#     monkeypatch.delenv("SLACK_EMOJI")
+#     monkeypatch.delenv("SLACK_WEBHOOK_URL")
+
+#     with pytest.raises(KeyError):
+#         # will raise before parsing/validation
+#         notify_slack.get_slack_message_attachment(
+#             message={}, region="foo", subject="bar"
+#         )
 
 
 @pytest.mark.parametrize(
