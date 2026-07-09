@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [7.5.1](https://github.com/terraform-aws-modules/terraform-aws-notify-slack/compare/v7.5.0...v7.5.1) (2026-07-09)
+
+### Bug Fixes
+
+* Replace deprecated aws_partition.current.id with .partition ([#277](https://github.com/terraform-aws-modules/terraform-aws-notify-slack/issues/277)) ([2451d09](https://github.com/terraform-aws-modules/terraform-aws-notify-slack/commit/2451d09fbb87eb7dc576c76a4759573b316ac08b))
+
 ## [7.5.0](https://github.com/terraform-aws-modules/terraform-aws-notify-slack/compare/v7.4.0...v7.5.0) (2026-06-19)
 
 ### Features
